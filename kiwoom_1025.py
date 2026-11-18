@@ -34,7 +34,7 @@ try:
         QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QComboBox,
         QPushButton, QLabel, QTableWidget, QTableWidgetItem, QSpinBox,
         QHeaderView, QCheckBox, QMessageBox, QSplitter, QFrame, QMenu, QInputDialog,
-        QStyledItemDelegate, QStyleOptionViewItem, QStyle,
+        QStyledItemDelegate, QStyleOptionViewItem, QStyle, QStyleFactory,
     )
 except ImportError as e:
     print(f"필요한 프로그램이 설치되지 않았습니다: {e}")
@@ -866,6 +866,9 @@ class Window(QMainWindow):
 
     def make_table(self, cols):
         t = KTable(0, len(cols))
+        fusion = QStyleFactory.create("Fusion")      # 윈도우11 스타일이 선택 칸 왼쪽에 그리는 파란 세로 막대 방지
+        if fusion:
+            t.setStyle(fusion)
         t.setHorizontalHeaderLabels(cols)
         cf = t.font()
         cf.setWeight(QFont.Weight.DemiBold)             # 내용 글씨: 조금 더 진하게
