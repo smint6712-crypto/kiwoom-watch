@@ -45,6 +45,7 @@ except ImportError as e:
 HERE = os.path.dirname(os.path.abspath(__file__))
 CONFIG = os.path.join(HERE, "kiwoom_config.ini")
 LOGFILE = os.path.join(HERE, "kiwoom_1025.log")
+ENTRYFILE = os.path.join(HERE, "편입일.json")      # 종목별 편입일 (판정 칸 아래줄 D0 / D+1 …)
 LISTFILE = os.path.join(HERE, "관심종목_5일선.txt")
 
 HOSTS = {
@@ -649,6 +650,30 @@ class RowPaint(QStyledItemDelegate):
         style.drawControl(QStyle.ControlElement.CE_ItemViewItem, o, p, o.widget)
 
 
+class JudgeTwo(QStyledItemDelegate):
+    """판정 칸: 위 절반 = 판정, 아래 절반 = 편입일 기준 D0 / D+1 / D+2 …"""
+    def paint(self, p, opt, idx):
+        o = QStyleOptionViewItem(opt)
+        self.initStyleOption(o, idx)
+        top, _, bot = o.text.replace("\u2028", "\n").partition("\n")
+        o.text = ""
+        o.state &= ~(QStyle.StateFlag.State_Selected | QStyle.StateFlag.State_HasFocus | QStyle.StateFlag.State_MouseOver)
+        if getattr(o.widget, "press_row", None) == idx.row():
+            o.backgroundBrush = QBrush(JADE)
+        style = o.widget.style() if o.widget else QApplication.style()
+        style.drawControl(QStyle.ControlElement.CE_ItemViewItem, o, p, o.widget)
+        p.save()
+        p.setFont(o.font)
+        rc = o.rect.adjusted(4, 0, -4, 0)
+        half = rc.height() // 2
+        al = Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter
+        p.setPen(o.palette.color(QPalette.ColorRole.Text))
+        p.drawText(QRect(rc.x(), rc.y(), rc.width(), half), al, top)
+        p.setPen(QColor("#555555"))
+        p.drawText(QRect(rc.x(), rc.y() + half, rc.width(), rc.height() - half), al, bot)
+        p.restore()
+
+
 class TwoLine(QStyledItemDelegate):
     """1·2·3차, 손절 칸: 10·25일선은 매수가를 칸 맨 위, 검색식 값을 맨 아래 / 5일선은 가운데"""
     def paint(self, p, opt, idx):
@@ -695,7 +720,7 @@ class Stock:
 class Window(QMainWindow):
     def __init__(self, rest):
         super().__init__()
-        self.setWindowTitle("5·10·25일선 매매 자동창 (구간 정렬판 · 11-18 수정판)")
+        self.setWindowTitle("5·10·25일선 매매 자동창 (구간 정렬판 · 11-19 수정판)")
         self.resize(1700, 820)
         self.rest = rest
         self.prefs = load_prefs()
@@ -706,6 +731,7 @@ class Window(QMainWindow):
         self.list_mtime = 0
         self.dirty = True
         self.removed = set()            # 삭제한 종목 (조건식이 다시 넣지 않게)
+        self.entry = self.load_entry()  # 종목 코드 -> 편입일 (YYYY-MM-DD)
         self.memos = {}                 # 오른쪽 목록의 메모 줄: 키 -> 글
         self.memo_seq = 0
         rh = self.prefs.get("rowh", "")
@@ -812,6 +838,7 @@ class Window(QMainWindow):
         split = QSplitter(Qt.Orientation.Horizontal)
         self.table = self.make_table(COLS)
         self.table.setHorizontalHeaderLabels([HEAD.get(c, c) for c in COLS])
+        self.table.setItemDelegateForColumn(C["판정"], JudgeTwo(self.table))
         self.two_line = TwoLine(self.table)
         for c in HEAD:
             self.table.setItemDelegateForColumn(C[c], self.two_line)
@@ -1035,6 +1062,8 @@ class Window(QMainWindow):
             else:
                 self.stocks.pop(c, None)
                 self.removed.add(c)
+                if self.entry.pop(c, None):
+                    self.save_entry()
             if c in self.order:
                 self.order.remove(c)
         if self.ws:
@@ -1075,15 +1104,51 @@ class Window(QMainWindow):
         for c in list(self.stocks):
             if c not in keep:
                 del self.stocks[c]
+                if self.entry.pop(c, None):
+                    self.save_entry()
         self.order = [c for c in codes] + [c for c in self.order if c in keep and c not in codes]
         for c in codes:
             self.add_stock(c)
         self.status(f"{source}에서 {len(codes)}종목을 읽었습니다. 일봉을 조회합니다.")
         self.dirty = True
 
+    def load_entry(self):
+        try:
+            with open(ENTRYFILE, encoding="utf-8") as f:
+                d = json.load(f)
+            return {str(k): str(v) for k, v in d.items()} if isinstance(d, dict) else {}
+        except (OSError, ValueError):
+            return {}
+
+    def save_entry(self):
+        try:
+            with open(ENTRYFILE, "w", encoding="utf-8") as f:
+                json.dump(self.entry, f, ensure_ascii=False, indent=0)
+        except OSError as e:
+            log(f"편입일 저장 실패 {e!r}")
+
+    def d_label(self, code):
+        """편입일 기준 D0 / D+1 …  (토·일은 세지 않는 평일 기준, 공휴일은 반영 안 됨)"""
+        try:
+            d = datetime.date.fromisoformat(self.entry.get(code, ""))
+        except ValueError:
+            return ""
+        today = datetime.date.today()
+        while d.weekday() >= 5:                       # 주말에 편입했으면 다음 월요일부터 시작
+            d += datetime.timedelta(days=1)
+        n = 0
+        while d < today:
+            d += datetime.timedelta(days=1)
+            if d.weekday() < 5:
+                n += 1
+        return "D0" if n == 0 else f"D+{n}"
+
     def add_stock(self, code, from_cond=False):
         if code in self.stocks:
             return
+        if code not in self.entry:
+            self.entry[code] = datetime.date.today().isoformat()
+            self.save_entry()
         st = Stock(code, self.name_of(code))
         st.from_cond = from_cond
         self.stocks[code] = st
@@ -1267,7 +1332,7 @@ class Window(QMainWindow):
             buys = res.get("buys") or []
             fb = res.get("fbuys") or []
             vals = {
-                "판정": v + ("*" if st.manual else ""), "종목": st.name or st.code,
+                "판정": v + ("*" if st.manual else "") + "\n" + self.d_label(st.code), "종목": st.name or st.code,
                 "현재가": f"{cur:,}" if cur else "",
                 "등락률": f"{st.rate:+.2f}%" if (st.cur or st.rate) else "",
                 "매매선": f"{line}일선" if line else res.get("next", ""),
