@@ -45,6 +45,11 @@ except ImportError as e:
 HERE = os.path.dirname(os.path.abspath(__file__))
 CONFIG = os.path.join(HERE, "kiwoom_config.ini")
 LOGFILE = os.path.join(HERE, "kiwoom_1025.log")
+SEED_ENTRY = [      # (종목 이름 일부 또는 전체(공백·점·대소문자 무시), 편입일) - 처음 한 번만 적용
+    (("jyp",), "2026-11-18", False), (("nhn",), "2026-11-10", True), (("지니언스",), "2026-11-12", False),
+    (("코리아써키트",), "2026-11-11", False), (("한진칼",), "2026-11-10", False),
+    (("에스피소프트", "sp소프트", "spsoft"), "2026-11-10", False), (("아시아나idt",), "2026-11-09", False),
+]
 ENTRYFILE = os.path.join(HERE, "편입일.json")      # 종목별 편입일 (판정 칸 아래줄 D0 / D+1 …)
 LISTFILE = os.path.join(HERE, "관심종목_5일선.txt")
 
@@ -732,6 +737,7 @@ class Window(QMainWindow):
         self.dirty = True
         self.removed = set()            # 삭제한 종목 (조건식이 다시 넣지 않게)
         self.entry = self.load_entry()  # 종목 코드 -> 편입일 (YYYY-MM-DD)
+        self.seeded = [c for c in self.entry.get("_seeded", "").split(",") if c]   # 내가 알려 준 편입일을 이미 적용한 종목
         self.memos = {}                 # 오른쪽 목록의 메모 줄: 키 -> 글
         self.memo_seq = 0
         rh = self.prefs.get("rowh", "")
@@ -1127,6 +1133,19 @@ class Window(QMainWindow):
         except OSError as e:
             log(f"편입일 저장 실패 {e!r}")
 
+    def apply_seed(self, st):
+        """내가 알려 준 편입일을 종목 이름으로 찾아 한 번만 적용"""
+        if not st.name or st.code in self.seeded:
+            return
+        nm = re.sub(r"[\s.·\-]", "", st.name).lower()
+        for keys, day, exact in SEED_ENTRY:
+            if (nm in keys) if exact else any(k in nm for k in keys):
+                self.entry[st.code] = day
+                self.seeded.append(st.code)
+                self.entry["_seeded"] = ",".join(self.seeded)
+                self.save_entry()
+                return
+
     def d_label(self, code):
         """편입일 기준 D0 / D+1 …  (토·일은 세지 않는 평일 기준, 공휴일은 반영 안 됨)"""
         try:
@@ -1332,7 +1351,7 @@ class Window(QMainWindow):
             buys = res.get("buys") or []
             fb = res.get("fbuys") or []
             vals = {
-                "판정": v + ("*" if st.manual else "") + "\n" + self.d_label(st.code), "종목": st.name or st.code,
+                "판정": v + ("*" if st.manual else "") + "\n" + (self.apply_seed(st) or self.d_label(st.code)), "종목": st.name or st.code,
                 "현재가": f"{cur:,}" if cur else "",
                 "등락률": f"{st.rate:+.2f}%" if (st.cur or st.rate) else "",
                 "매매선": f"{line}일선" if line else res.get("next", ""),
